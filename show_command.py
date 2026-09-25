@@ -1,13 +1,26 @@
 from netmiko import ConnectHandler
+from netmiko.exceptions import (
+    NetmikoAuthenticationException,
+    NetmikoTimeoutException,
+)
+
 import os
 from dotenv import load_dotenv
+
+DEVICE_TYPE = "cisco_ios"
+SWITCH_FILE = "switches.txt"
+OUTPUT_FILE = "output.txt"
 
 load_dotenv()
 
 # Credentials username and password which are saved in .env
-username = os.environ.get('USER_NAME')
-passwd = os.environ.get('PASSWD')
+username = os.getenv('USER_NAME')
+password = os.getenv('PASSWORD')
 
+if not username or not password:
+    raise ValueError("USER_NAME or PASSWORD is missing from .env")
+
+# Create the list of IP addresses and return it
 def read_switches(filename):
     '''Read switch IP addressses from a file'''
 
@@ -22,47 +35,64 @@ def read_switches(filename):
 
     return switches
 
-def create_device(ip, username, passwd):
+def create_device(ip, username, password):
     '''Create netmiko dictionary'''
 
-    device = {
-        'device_type': 'cisco_ios',
+    return {
+        'device_type': DEVICE_TYPE,
         'host': ip,
         'username': username,
-        'password': passwd,
+        'password': password,
     }
-
-    return device
 
 # Read the list of IP addresses in switches.txt
 
-def run_show_command(switches, command):
+def run_show_command(switches, command, username, password, output_filename):
     '''Run a show command on all switches'''
 
     print("Start script, please wait...")
 
-    with open("output.txt", "w") as output_file:
+    with open(output_filename, "w") as output_file:
 
         for ip in switches:
-            print(f"Connecting to {ip}...")
 
-            device = create_device(ip, username, passwd)
+            try:
+                print(f"Connecting to {ip}...")
 
-            connection = ConnectHandler(**device)
+                device = create_device(ip, username, password)
 
-            output = connection.send_command(command)
+                with ConnectHandler(**device) as connection:
+                    output = connection.send_command(command)
 
-            output_file.write(f"\n{'=' * 60}\n")
-            output_file.write(f"DEVICE: {ip}\n")
-            output_file.write(f"{'=' * 60}\n")
-            output_file.write(output)
-            output_file.write("\n")
+                output_file.write(f"\n{'=' * 60}\n")
+                output_file.write(f"DEVICE: {ip}\n")
+                output_file.write(f"{'=' * 60}\n")
+                output_file.write(output)
+                output_file.write("\n")
 
-            connection.disconnect()
+                print(f"{ip}: DONE")
 
-            print(f"{ip}: DONE")
+            except NetmikoAuthenticationException as error:
+                print(f"{ip}: AUTHENTICATION FAILED - {error}")
 
-switches = read_switches("switches.txt")
-print(f"Read {len(switches)} IP addresses from file")
+            except NetmikoTimeoutException as error:
+                print(f"{ip}: CONNECTION TIMEOUT - {error}")
 
-run_show_command(switches, "show version")
+            except Exception as error:
+                print(f"{ip}: FAILED - {error}")
+
+def main():
+    switches = read_switches(SWITCH_FILE)
+
+    print(f"Read {len(switches)} IP addresses from file")
+
+    run_show_command(
+                switches,
+                "show version",
+                username,
+                password,
+                OUTPUT_FILE,
+                )
+
+if __name__ == "__main__":
+    main()
