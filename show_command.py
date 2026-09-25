@@ -1,7 +1,6 @@
 from netmiko import ConnectHandler
 import os
 from dotenv import load_dotenv
-import sys
 
 load_dotenv()
 
@@ -9,47 +8,61 @@ load_dotenv()
 username = os.environ.get('USER_NAME')
 passwd = os.environ.get('PASSWD')
 
-data = open("switches.txt", "r")
-list_of_data = []
+def read_switches(filename):
+    '''Read switch IP addressses from a file'''
 
-def get_device_info(list_of_data, username, passwd):
-    devices = {
+    switches = []
+
+    with open(filename, "r") as file:
+        for line in file:
+            ip = line.strip()
+
+            if ip:
+                switches.append(ip)
+
+    return switches
+
+def create_device(ip, username, passwd):
+    '''Create netmiko dictionary'''
+
+    device = {
         'device_type': 'cisco_ios',
-        'ip': 'list_of_data',
+        'host': ip,
         'username': username,
         'password': passwd,
     }
 
-    return devices
+    return device
 
 # Read the list of IP addresses in switches.txt
 
-def func_switch_list(delete_empty_lines=False):
-    print('Reading IP addresses from file')
-    with open('switches.txt', 'r') as file:
-        for line in file:
-            if delete_empty_lines and not line.strip():
-                continue
-            ip = line.strip()
-            list_of_data.append(ip)
-    print(f'Read {len(list_of_data)} IP addresses from file.')
+def run_show_command(switches, command):
+    '''Run a show command on all switches'''
 
-def func_show_command():
-    devices = get_device_info(list_of_data, username, passwd)
-    print('\x1b[1;31;47m' + "Start script, please do nothing" + '\x1b[0m')
-    for ip in list_of_data:
-        devices['ip'] = (ip)
-        ssh_connect = ConnectHandler(**devices)
+    print("Start script, please wait...")
 
-        output = ssh_connect.send_command('show version')
+    with open("output.txt", "w") as output_file:
 
-        original_stdout = sys.stdout
-        with open('func_show command.txt', 'a+') as f:
-            sys.stdout = f
-            print(output)
-            sys.stdout = original_stdout
+        for ip in switches:
+            print(f"Connecting to {ip}...")
 
-        print('\x1b[6;30;42m' + " DONE " + '\x1b[0m')
-        ssh_connect.disconnect()
-func_switch_list(delete_empty_lines=True)
-func_show_command()
+            device = create_device(ip, username, passwd)
+
+            connection = ConnectHandler(**device)
+
+            output = connection.send_command(command)
+
+            output_file.write(f"\n{'=' * 60}\n")
+            output_file.write(f"DEVICE: {ip}\n")
+            output_file.write(f"{'=' * 60}\n")
+            output_file.write(output)
+            output_file.write("\n")
+
+            connection.disconnect()
+
+            print(f"{ip}: DONE")
+
+switches = read_switches("switches.txt")
+print(f"Read {len(switches)} IP addresses from file")
+
+run_show_command(switches, "show version")
