@@ -5,11 +5,11 @@ from netmiko.exceptions import (
 )
 
 import os
+from datetime import datetime
 from dotenv import load_dotenv
 
 DEVICE_TYPE = "cisco_ios"
 SWITCH_FILE = "switches.txt"
-OUTPUT_FILE = "output.txt"
 
 load_dotenv()
 
@@ -44,6 +44,15 @@ def create_device(ip, username, password):
         'username': username,
         'password': password,
     }
+
+def create_output_filename(command):
+    '''Create output filename using command and current date/time'''
+
+    command_name = command.replace(" ", "_").lower()
+
+    current_time = datetime.now().strftime("%m%d%y_%I%M%p").lower()
+
+    return f"{command_name}_{current_time}.txt"
 
 # Read the list of IP addresses in switches.txt
 
@@ -86,12 +95,23 @@ def main():
 
     print(f"Read {len(switches)} IP addresses from file")
 
+    command = input("Enter the command to run on all switches: ").strip()
+
+    if not command:
+        print("No command entered. Exiting.")
+        return
+
+    output_filename = create_output_filename(command)
+
+    print(f"Command: {command}")
+    print(f"Output file: {output_filename}")
+
     run_show_command(
                 switches,
-                "show version",
+                command,
                 username,
                 password,
-                OUTPUT_FILE,
+                output_filename,
                 )
 
 if __name__ == "__main__":
