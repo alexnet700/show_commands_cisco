@@ -1,118 +1,118 @@
+import logging
+import os
+import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+
+from dotenv import load_dotenv
 from netmiko import ConnectHandler
 from netmiko.exceptions import (
     NetmikoAuthenticationException,
     NetmikoTimeoutException,
 )
 
-import os
-from datetime import datetime
-from dotenv import load_dotenv
-
 DEVICE_TYPE = "cisco_ios"
 SWITCH_FILE = "switches.txt"
+# Keep this modest: each worker opens its own SSH session to a switch.
+MAX_WORKERS = 5
 
-load_dotenv()
+logger = logging.getLogger(__name__)
 
-# Credentials username and password which are saved in .env
-username = os.getenv('USER_NAME')
-password = os.getenv('PASSWORD')
 
-if not username or not password:
-    raise ValueError("USER_NAME or PASSWORD is missing from .env")
-
-# Create the list of IP addresses and return it
 def read_switches(filename):
-    '''Read switch IP addressses from a file'''
+    """Read non-empty switch addresses from a file."""
+    with open(filename, "r", encoding="utf-8") as switch_file:
+        return [line.strip() for line in switch_file if line.strip()]
 
-    switches = []
-
-    with open(filename, "r") as file:
-        for line in file:
-            ip = line.strip()
-
-            if ip:
-                switches.append(ip)
-
-    return switches
 
 def create_device(ip, username, password):
-    '''Create netmiko dictionary'''
-
+    """Create the Netmiko connection parameters for a switch."""
     return {
-        'device_type': DEVICE_TYPE,
-        'host': ip,
-        'username': username,
-        'password': password,
+        "device_type": DEVICE_TYPE,
+        "host": ip,
+        "username": username,
+        "password": password,
     }
 
+
 def create_output_filename(command):
-    '''Create output filename using command and current date/time'''
+    """Create a filesystem-safe output name with a unique timestamp."""
+    command_name = re.sub(r"[^a-zA-Z0-9._-]+", "_", command.strip()).strip("._-")
+    command_name = command_name[:80] or "show_command"
+    current_time = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    return f"{command_name.lower()}_{current_time}.txt"
 
-    command_name = command.replace(" ", "_").lower()
 
-    current_time = datetime.now().strftime("%m%d%y_%I%M%p").lower()
+def _run_on_switch(ip, command, username, password):
+    """Return (status, output) for one switch, converting errors to results."""
+    try:
+        with ConnectHandler(**create_device(ip, username, password)) as connection:
+            return "OK", connection.send_command(command)
+    except NetmikoAuthenticationException as error:
+        return "AUTHENTICATION FAILED", str(error)
+    except NetmikoTimeoutException as error:
+        return "CONNECTION TIMEOUT", str(error)
+    except Exception as error:
+        logger.exception("Unexpected failure while connecting to %s", ip)
+        return "FAILED", str(error)
 
-    return f"{command_name}_{current_time}.txt"
-
-# Read the list of IP addresses in switches.txt
 
 def run_show_command(switches, command, username, password, output_filename):
-    '''Run a show command on all switches'''
+    """Run a show command concurrently and save every device result."""
+    logger.info("Starting command on %d switch(es)", len(switches))
+    if not switches:
+        with open(output_filename, "w", encoding="utf-8"):
+            pass
+        return
 
-    print("Start script, please wait...")
+    results = {}
+    worker_count = min(MAX_WORKERS, len(switches))
 
-    with open(output_filename, "w") as output_file:
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {
+            executor.submit(_run_on_switch, ip, command, username, password): ip
+            for ip in switches
+        }
+        for future in as_completed(futures):
+            ip = futures[future]
+            results[ip] = future.result()
+            logger.info("%s: %s", ip, results[ip][0])
 
+    # Write in input order even though connections finish at different times.
+    with open(output_filename, "w", encoding="utf-8") as output_file:
         for ip in switches:
+            status, output = results[ip]
+            output_file.write(f"\n{'=' * 60}\nDEVICE: {ip}\nSTATUS: {status}\n{'=' * 60}\n")
+            output_file.write(output)
+            output_file.write("\n")
 
-            try:
-                print(f"Connecting to {ip}...")
-
-                device = create_device(ip, username, password)
-
-                with ConnectHandler(**device) as connection:
-                    output = connection.send_command(command)
-
-                output_file.write(f"\n{'=' * 60}\n")
-                output_file.write(f"DEVICE: {ip}\n")
-                output_file.write(f"{'=' * 60}\n")
-                output_file.write(output)
-                output_file.write("\n")
-
-                print(f"{ip}: DONE")
-
-            except NetmikoAuthenticationException as error:
-                print(f"{ip}: AUTHENTICATION FAILED - {error}")
-
-            except NetmikoTimeoutException as error:
-                print(f"{ip}: CONNECTION TIMEOUT - {error}")
-
-            except Exception as error:
-                print(f"{ip}: FAILED - {error}")
 
 def main():
-    switches = read_switches(SWITCH_FILE)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+    load_dotenv()
+    username = os.getenv("USER_NAME")
+    password = os.getenv("PASSWORD")
+    if not username or not password:
+        raise ValueError("USER_NAME or PASSWORD is missing from .env")
 
-    print(f"Read {len(switches)} IP addresses from file")
+    try:
+        switches = read_switches(SWITCH_FILE)
+    except OSError as error:
+        raise SystemExit(f"Could not read {SWITCH_FILE}: {error}") from error
+    if not switches:
+        raise SystemExit(f"No switch addresses found in {SWITCH_FILE}")
 
+    logger.info("Read %d switch address(es) from %s", len(switches), SWITCH_FILE)
     command = input("Enter the command to run on all switches: ").strip()
-
     if not command:
-        print("No command entered. Exiting.")
+        logger.info("No command entered. Exiting.")
         return
 
     output_filename = create_output_filename(command)
+    logger.info("Command: %s", command)
+    logger.info("Output file: %s", output_filename)
+    run_show_command(switches, command, username, password, output_filename)
 
-    print(f"Command: {command}")
-    print(f"Output file: {output_filename}")
-
-    run_show_command(
-                switches,
-                command,
-                username,
-                password,
-                output_filename,
-                )
 
 if __name__ == "__main__":
     main()
